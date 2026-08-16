@@ -52,6 +52,8 @@ extern Status setupBreakpad();
 #endif
 
 int main(int argc, char *argv[]) {
+  // Storage 启动时先规范化数据目录，再交给 StorageServer 同步 Meta 分片拓扑并恢复 Raft Part。
+  // 这里不提前监听 RPC，避免恢复期间接收图读写请求。
   google::SetVersionString(nebula::versionString());
   google::SetUsageMessage("Usage: " + std::string(argv[0]) + " [options]");
   // Detect if the server has already been started
@@ -152,6 +154,7 @@ int main(int argc, char *argv[]) {
     return EXIT_FAILURE;
   }
 
+  // StorageServer 统一持有 MetaClient、KVStore、Schema/Index 缓存以及三类 Thrift Handler。
   auto storageServer = std::make_unique<nebula::storage::StorageServer>(
       localhost, metaAddrsRet.value(), paths, FLAGS_wal_path, FLAGS_listener_path);
   // Setup the signal handlers

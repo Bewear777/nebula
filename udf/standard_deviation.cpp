@@ -11,6 +11,7 @@
 #include "../src/common/datatypes/List.h"
 
 extern "C" GraphFunction *create() {
+  // create/destroy 是插件装载器约定的 C ABI，避免 C++ 名字改编导致运行时无法解析符号。
   return new standard_deviation;
 }
 extern "C" void destroy(GraphFunction *function) {
@@ -45,6 +46,7 @@ bool standard_deviation::isPure() {
 }
 
 double caculate_standard_deviation(const std::vector<double> &numbers) {
+  // 这里计算总体标准差（除以 N）；输入元素的数值类型检查由 body 负责。
   double sum = 0;
   for (double number : numbers) {
     sum += number;

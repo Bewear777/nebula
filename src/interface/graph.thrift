@@ -109,6 +109,8 @@ struct VerifyClientVersionReq {
 }
 
 
+// Graph 数据面的公开 RPC 边界：认证创建会话，执行接口携带 sessionId 进入查询流水线。
+// Thrift 生成的 future_* 方法由 graph/service/GraphService.cpp 实现。
 service GraphService {
     AuthResponse authenticate(1: binary username, 2: binary password)
 

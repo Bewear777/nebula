@@ -26,6 +26,8 @@ namespace graph {
 
 Status QueryEngine::init(std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor,
                          meta::MetaClient* metaClient) {
+  // Schema/Index Manager 是 Meta 本地缓存视图，StorageClient 是远端数据面；
+  // 二者共同构成查询规划阶段与执行阶段之间的边界。
   metaClient_ = metaClient;
   schemaManager_ = meta::ServerBasedSchemaManager::create(metaClient_);
   indexManager_ = meta::ServerBasedIndexManager::create(metaClient_);
@@ -45,7 +47,8 @@ Status QueryEngine::init(std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor
   return setupMemoryMonitorThread();
 }
 
-// Create query context and query instance and execute it
+// 创建单次查询上下文并启动完整流水线：parse -> validate -> plan -> optimize -> schedule/execute。
+// QueryInstance 采用自管理生命周期，最终由完成/错误回调释放，因此这里不使用 unique_ptr 持有。
 void QueryEngine::execute(RequestContextPtr rctx) {
   auto qctx = std::make_unique<QueryContext>(std::move(rctx),
                                              schemaManager_.get(),

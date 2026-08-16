@@ -25,6 +25,7 @@ namespace mock {
 void MockCluster::waitUntilAllElected(kvstore::NebulaStore* kvstore,
                                       GraphSpaceID spaceId,
                                       const std::vector<PartitionID>& partIds) {
+  // 测试必须等所有 Part 选出 leader 后再写入，否则偶发的 E_LEADER_CHANGED 会污染功能断言。
   while (true) {
     size_t readyNum = 0;
     for (auto partId : partIds) {
@@ -93,6 +94,7 @@ std::unique_ptr<kvstore::NebulaStore> MockCluster::initMetaKV(const char* dataPa
 }
 
 void MockCluster::startMeta(const std::string& rootPath, HostAddr addr) {
+  // 复用真实 NebulaStore 与 MetaServiceHandler，只替换网络和拓扑依赖，确保测试覆盖生产数据流。
   metaKV_ = initMetaKV(rootPath.c_str(), addr);
   metaServer_ = std::make_unique<RpcServer>();
   auto handler = std::make_shared<meta::MetaServiceHandler>(metaKV_.get(), clusterId_);

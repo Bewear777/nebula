@@ -93,6 +93,8 @@ Status StorageServer::setupMemoryMonitorThread() {
 }
 
 std::unique_ptr<kvstore::KVStore> StorageServer::getStoreInstance() {
+  // PartManager 把 Meta 拓扑变化转换为 KVStore 的 add/remove part 回调；
+  // Schema/Index Manager 则为行编解码、索引维护与 compaction filter 提供一致元数据视图。
   kvstore::KVOptions options;
   options.dataPaths_ = dataPaths_;
   options.walPath_ = walPath_;

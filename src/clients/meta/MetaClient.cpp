@@ -126,6 +126,8 @@ bool MetaClient::isMetadReady() {
 }
 
 bool MetaClient::waitForMetadReady(int count, int retryIntervalSecs) {
+  // 首次成功不仅表示 RPC 可达，还要求版本校验、元数据快照和配置同步完成；
+  // 随后的后台心跳负责增量刷新路由/schema，并在 leader 变化后切换连接。
   if (!options_.skipConfig_) {
     std::string gflagsJsonPath;
     GflagsManager::getGflagsModule(gflagsModule_);
@@ -180,6 +182,7 @@ void MetaClient::stop() {
 }
 
 void MetaClient::heartBeatThreadFunc() {
+  // 使用延迟任务而不是阻塞循环，使 stop() 可以安全唤醒并等待后台线程退出。
   SCOPE_EXIT {
     bgThread_->addDelayTask(
         FLAGS_heartbeat_interval_secs * 1000, &MetaClient::heartBeatThreadFunc, this);

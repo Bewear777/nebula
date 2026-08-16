@@ -76,6 +76,8 @@ StorageClientBase<ClientType, ClientManagerType>::collectResponse(
     folly::EventBase* evb,
     std::unordered_map<HostAddr, Request> requests,
     RemoteFunc&& remoteFunc) {
+  // 每个 host 对应一个已按 leader 聚合的子请求；并发 Future 全部完成后，再恢复内存检查并
+  // 汇总 host 延迟、RPC 失败和 partition 业务错误，调用方因此可以只重试失败分片。
   memory::MemoryCheckOffGuard offGuard;
   std::vector<folly::Future<StatusOr<Response>>> respFutures;
   respFutures.reserve(requests.size());
@@ -164,6 +166,8 @@ folly::Future<StatusOr<Response>> StorageClientBase<ClientType, ClientManagerTyp
     evb = DCHECK_NOTNULL(ioThreadPool_)->getEventBase();
   }
 
+  // RPC 回包中的 E_LEADER_CHANGED 会回写 MetaClient 的临时 leader 缓存，
+  // 后续请求无需等待下一次 Meta 心跳即可路由到新 leader。
   auto spaceId = request.get_space_id();
   return folly::via(evb)
       .thenValue([remoteFunc = std::move(remoteFunc), request, evb, host, this](auto&&) {

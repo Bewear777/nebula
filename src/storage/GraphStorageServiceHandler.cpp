@@ -26,6 +26,8 @@
 #include "storage/transaction/ChainDeleteEdgesGroupProcessor.h"
 #include "storage/transaction/ChainUpdateEdgeLocalProcessor.h"
 
+// RPC 入口统一创建 Processor，并在同步栈顶兜住内存超限/异常；跨线程阶段仍由 Processor 自行收敛错误。
+// 这样所有读、写、索引与链式事务接口都遵循同一 Future 完成语义。
 //  Processor::process's root memory check is turn on here.
 //  if the call stack in current thread,
 //    Processors DO NOT NEED handle error in their logic.
@@ -51,6 +53,7 @@ namespace nebula {
 namespace storage {
 
 GraphStorageServiceHandler::GraphStorageServiceHandler(StorageEnv* env) : env_(env) {
+  // 读请求可使用独立 IO/CPU 池，写请求则尽快下沉到 KV/Raft；二者隔离可避免大扫描拖慢复制写。
   if (FLAGS_reader_handlers_type == "io") {
     auto tf = std::make_shared<folly::NamedThreadFactory>("reader-pool");
     readerPool_ =

@@ -45,6 +45,8 @@ NebulaStore::~NebulaStore() {
 }
 
 bool NebulaStore::init() {
+  // 恢复顺序很关键：先启动 Raft 服务，再扫描本地 Engine，随后用 Meta 的权威分片拓扑
+  // 补齐/剔除 Part，最后注册拓扑变更回调。这样可避免陈旧副本重新加入并提供服务。
   LOG(INFO) << "Start the raft service...";
   bgWorkers_ = std::make_shared<thread::GenericThreadPool>();
   bgWorkers_->start(FLAGS_num_workers, "nebula-bgworkers");

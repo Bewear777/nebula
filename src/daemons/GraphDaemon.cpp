@@ -41,6 +41,8 @@ DECLARE_string(flagfile);
 DECLARE_bool(containerized);
 
 int main(int argc, char *argv[]) {
+  // Graph 进程启动顺序必须保持“参数/日志 -> 运行时环境 -> HTTP -> RPC”的依赖关系；
+  // 任一步骤失败都直接退出，并由局部对象析构已启动的资源，避免残留半初始化服务。
   google::SetVersionString(nebula::versionString());
   google::SetUsageMessage("Usage: " + std::string(argv[0]) + " [options]");
   if (argc == 1) {
@@ -144,6 +146,7 @@ int main(int argc, char *argv[]) {
   }
   LOG(INFO) << "Number of worker threads: " << FLAGS_num_worker_threads;
 
+  // GraphServer 内部会创建 MetaClient、会话管理器和 QueryEngine，是查询数据流的总入口。
   auto graphServer = std::make_unique<nebula::graph::GraphServer>(localhost);
   // Setup the signal handlers
   status = setupSignalHandler(graphServer.get());
