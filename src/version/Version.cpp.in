@@ -14,6 +14,7 @@ namespace nebula {
 std::string gitInfoSha() { return "@GIT_INFO_SHA@"; }
 
 std::string versionString(bool verbose) {
+  // 版本输出同时包含发布版本、源码提交和构建时间；Graph/Meta 启动时依赖这些信息做兼容性校验。
   std::string version = getOriginVersion();
   if (!version.empty()) {
     version += ", ";

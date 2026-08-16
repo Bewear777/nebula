@@ -62,6 +62,8 @@ WebService::~WebService() {
 }
 
 Status WebService::start(uint16_t httpPort) {
+  // 先固化路由表，再启动独立监听线程；start 返回前等待 bind/start 回调，
+  // 调用方因此可以把“HTTP 已可用”作为继续启动 RPC 服务的可靠前置条件。
   if (started_) {
     LOG(INFO) << "Web service has been started.";
     return Status::OK();

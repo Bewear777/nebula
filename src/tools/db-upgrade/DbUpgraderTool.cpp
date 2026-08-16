@@ -79,6 +79,8 @@ void printParams() {
 }
 
 int main(int argc, char* argv[]) {
+  // 升级期间关闭自动 compaction，避免旧格式扫描与后台重写竞争 IO；
+  // 全部分片转换完成后再按参数统一压缩，形成可恢复的阶段边界。
   // When begin to upgrade the data, close compaction
   // When upgrade finished, perform compaction.
   FLAGS_rocksdb_column_family_options = R"({

@@ -680,6 +680,7 @@ struct KVRemoveRequest {
         cpp.template = "std::unordered_map") parts,
 }
 
+// Graph 到 Storage 的数据面接口：请求已按 space/partition 组织，Storage 再执行图语义到 KV 的转换。
 service GraphStorageService {
     GetNeighborsResponse getNeighbors(1: GetNeighborsRequest req);
     GetDstBySrcResponse getDstBySrc(1: GetDstBySrcRequest req);
@@ -865,6 +866,7 @@ struct ClearSpaceResp {
     1: common.ErrorCode code,
 }
 
+// Meta 到 Storage 的管理面接口：用于 checkpoint、任务、leader 与空间运维，不承载普通查询。
 service StorageAdminService {
     // Interfaces for admin operations
     AdminExecResp transLeader(1: TransLeaderReq req);
@@ -931,6 +933,7 @@ struct ChainDeleteEdgesRequest {
     4: i64                                      term,
 }
 
+// Storage 节点间内部接口，供链式边事务等需要跨分片协调的能力使用。
 service InternalStorageService {
     ExecResponse chainAddEdges(1: ChainAddEdgesRequest req);
     UpdateResponse chainUpdateEdge(1: ChainUpdateEdgeRequest req);

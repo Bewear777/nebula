@@ -71,6 +71,8 @@
 #include "meta/processors/zone/MergeZoneProcessor.h"
 #include "meta/processors/zone/RenameZoneProcessor.h"
 
+// 每个 RPC 创建专用 Processor：先取得 Future，再启动处理，Processor 在完成/失败路径填充响应。
+// Handler 保持轻量，便于把 leader 检查、KV 原子写和错误码映射集中在 Processor 层。
 #define RETURN_FUTURE(processor)   \
   auto f = processor->getFuture(); \
   processor->process(req);         \

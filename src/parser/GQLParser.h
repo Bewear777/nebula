@@ -39,7 +39,8 @@ class GQLParser {
   }
 
   StatusOr<std::unique_ptr<Sentence>> parse(std::string query) {
-    // Since GraphScanner needs a writable buffer, we have to copy the query string
+    // Scanner 需要可写且地址稳定的连续缓冲区，因此先接管 query，再通过 readBuffer 增量喂给 lexer。
+    // 解析失败时必须同时清空 scanner 缓冲和半成品 AST，保证同一 Parser 可安全处理下一条语句。
     size_t querySize = query.size();
     size_t maxAllowedQuerySize = static_cast<size_t>(FLAGS_max_allowed_query_size);
     if (querySize > maxAllowedQuerySize) {

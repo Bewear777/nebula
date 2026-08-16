@@ -181,6 +181,8 @@ Expression* Expression::decode(ObjectPool* pool, folly::StringPiece encoded) {
 
 // static
 Expression* Expression::decode(ObjectPool* pool, Expression::Decoder& decoder) {
+  // 编码首字节是表达式 Kind。这里按 Kind 构造具体 AST 节点，再由 resetFrom 递归恢复子树；
+  // 所有节点进入 ObjectPool，查询结束时可整体释放，避免复杂表达式树逐节点析构。
   Expression* exp = nullptr;
   Kind kind = decoder.readKind();
   switch (kind) {

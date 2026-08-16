@@ -20,7 +20,8 @@ RowWriterV2::RowWriterV2(const meta::NebulaSchemaProvider* schema)
     : schema_(schema), numNullBytes_(0), approxStrLen_(0), finished_(false), outOfSpaceStr_(false) {
   CHECK(!!schema_);
 
-  // Reserve space for the header, the data, and the string values
+  // 行编码布局为：版本头 + nullable 位图 + 定长区 + 变长区 + 末尾偏移信息。
+  // 预留空间既减少扩容，也保证后续字段偏移计算基于稳定的定长区起点。
   buf_.reserve(schema_->size() + schema_->getNumFields() / 8 + 8 + 1024);
 
   char header = 0;
@@ -195,6 +196,7 @@ bool RowWriterV2::checkNullBit(ssize_t pos) const {
 }
 
 WriteResult RowWriterV2::setValue(ssize_t index, const Value& val) {
+  // 统一在此完成 Value 到物理字段类型的分派；各 write 重载负责范围、类型和偏移校验。
   CHECK(!finished_) << "You have called finish()";
   if (index < 0 || static_cast<size_t>(index) >= schema_->getNumFields()) {
     return WriteResult::UNKNOWN_FIELD;

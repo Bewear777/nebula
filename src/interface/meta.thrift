@@ -1204,6 +1204,8 @@ struct SaveGraphVersionReq {
     3: binary build_version;
 }
 
+// 控制面 RPC：schema、用户、拓扑、配置和作业请求在服务端分派到独立 Processor，
+// 写操作最终进入 Meta KV/Raft，读操作由 leader 上的一致元数据视图返回。
 service MetaService {
     ExecResp createSpace(1: CreateSpaceReq req);
     ExecResp dropSpace(1: DropSpaceReq req);

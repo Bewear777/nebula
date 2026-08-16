@@ -27,6 +27,8 @@ namespace graph {
 
 Status GraphService::init(std::shared_ptr<folly::IOThreadPoolExecutor> ioExecutor,
                           const HostAddr& hostAddr) {
+  // Graph 层不持久化业务数据：启动时通过 MetaClient 拉取 schema、索引和分片路由，
+  // QueryEngine 再基于这些缓存把物理算子请求路由到对应 Storage leader。
   auto addrs = network::NetworkUtils::toHosts(FLAGS_meta_server_addrs);
   if (!addrs.ok()) {
     return addrs.status();
@@ -159,6 +161,8 @@ folly::Future<ExecutionResponse> GraphService::future_executeWithParameter(
     ctx->finish();
     return future;
   }
+  // 会话查找是异步边界。只有获得有效 ClientSession 后，才把查询文本、参数和权限上下文
+  // 交给 QueryEngine，确保后续 validator/planner/executor 看到一致的 space 与用户状态。
   auto cb = [this, sessionId, ctx = std::move(ctx), parameterMap = std::move(parameterMap)](
                 StatusOr<std::shared_ptr<ClientSession>> ret) mutable {
     if (!ret.ok()) {

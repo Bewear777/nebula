@@ -59,6 +59,8 @@ extern Status setupBreakpad();
 #endif
 
 int main(int argc, char* argv[]) {
+  // Meta 服务既是 Thrift RPC 服务，也是一个由 Raft 保护的 KV 应用；因此必须先恢复
+  // 本地 KV/集群身份，再开放元数据接口，防止客户端读到未完成恢复的目录状态。
   google::SetVersionString(nebula::versionString());
   google::SetUsageMessage("Usage: " + std::string(argv[0]) + " [options]");
   // Detect if the server has already been started
@@ -141,6 +143,7 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  // space、schema、用户、作业与分片分配最终都编码为 KV，并通过 Meta Raft 组复制。
   gKVStore = initKV(peersRet.value(), localhost);
   if (gKVStore == nullptr) {
     LOG(ERROR) << "Init kv failed!";
@@ -188,6 +191,7 @@ int main(int argc, char* argv[]) {
     return EXIT_FAILURE;
   }
 
+  // Handler 只负责 RPC 到 Processor 的分派；并发控制、校验和 KV 事务由具体 Processor 完成。
   auto handler =
       std::make_shared<nebula::meta::MetaServiceHandler>(gKVStore.get(), metaClusterId());
   LOG(INFO) << "The meta daemon start on " << localhost;

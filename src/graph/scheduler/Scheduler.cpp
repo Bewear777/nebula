@@ -22,6 +22,9 @@ namespace nebula {
 namespace graph {
 
 /*static*/ void Scheduler::analyzeLifetime(const PlanNode* root, std::size_t loopLayers) {
+  // 在真正调度前遍历执行计划 DAG，统计每个中间变量的消费者数量。
+  // Executor 据此在最后一个消费者完成后释放结果；分支和循环的输出需标记为长生命周期，
+  // 否则异步分支尚未执行时就可能被提前回收。
   std::stack<std::tuple<const PlanNode*, std::size_t>> stack;
   stack.push(std::make_tuple(root, loopLayers));
   while (!stack.empty()) {

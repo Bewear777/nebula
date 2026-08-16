@@ -137,6 +137,7 @@ struct GetStateResponse {
     9: list<binary>     peers;
 }
 
+// Raft 传输接口只承载共识消息；业务键值已在上层序列化为日志，接收端按 group/part 路由。
 service RaftexService {
     AskForVoteResponse askForVote(1: AskForVoteRequest req);
     AppendLogResponse appendLog(1: AppendLogRequest req);
