@@ -22,6 +22,48 @@ DEFINE_int64(limit, 1000, "Limit to output.");
 namespace nebula {
 namespace storage {
 
+namespace {
+
+// 将属性值序列化为可直接拼接到 INSERT 语句中的 nGQL 表达式。
+std::string toNgqlValue(const Value& value) {
+  switch (value.type()) {
+    case Value::Type::DATE:
+      return folly::sformat("date(\"{}\")", value.getDate().toString());
+    case Value::Type::TIME: {
+      auto str = value.getTime().toString();
+      // Time::toString() 输出 9 位小数，nGQL 时间值按微秒精度保留前 6 位。
+      if (str.size() >= 3 && str.compare(str.size() - 3, 3, "000") == 0) {
+        str.resize(str.size() - 3);
+      }
+      return folly::sformat("time(\"{}\")", str);
+    }
+    case Value::Type::DATETIME: {
+      auto str = value.getDateTime().toString();
+      // DateTime::toString() 输出 9 位小数，去掉固定的 3 个纳秒占位位。
+      if (str.size() >= 3 && str.compare(str.size() - 3, 3, "000") == 0) {
+        str.resize(str.size() - 3);
+      }
+      return folly::sformat("datetime(\"{}\")", str);
+    }
+    case Value::Type::DURATION: {
+      const auto& duration = value.getDuration();
+      // DURATION 按官方定义拆分为六个字段，导出结果可直接作为 nGQL 函数参数。
+      return folly::sformat(
+          "duration({{years:{},months:{},days:{},hours:{},minutes:{},seconds:{}}})",
+          duration.years(),
+          duration.monthsInYear(),
+          duration.days(),
+          duration.hours(),
+          duration.minutes(),
+          duration.secondsInMinute());
+    }
+    default:
+      return value.toString();
+  }
+}
+
+}  // namespace
+
 Status DbDumper::init() {
   auto status = initMeta();
   if (!status.ok()) {
@@ -548,7 +590,7 @@ void DbDumper::printValue(const RowReaderWrapper* reader) {
   size_t index = 0;
   while (iter) {
     auto value = reader->getValueByIndex(index);
-    auto retVal = value.toString();
+    auto retVal = toNgqlValue(value);
     std::cout << retVal << ", ";
     ++iter;
     ++index;
