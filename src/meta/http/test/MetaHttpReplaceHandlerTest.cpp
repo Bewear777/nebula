@@ -208,6 +208,15 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
   afterUpdate.erase(sFrom);
   afterUpdate.insert(sTo);
   const auto zonesBeforeUpdate = dumpZones(gKVStore);
+  auto zonesAfterUpdate = zonesBeforeUpdate;
+  for (auto& [zoneName, hosts] : zonesAfterUpdate) {
+    UNUSED(zoneName);
+    for (auto& host : hosts) {
+      if (host == sFrom) {
+        host = sTo;
+      }
+    }
+  }
 
   {
     std::vector<kvstore::KV> runtimeData{
@@ -219,7 +228,9 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
     static const char* tmp = "http://127.0.0.1:%d/replace?from=%s&to=%s&space=test_space";
     auto url = folly::stringPrintf(
         tmp, FLAGS_ws_http_port, sFrom.toString().c_str(), sTo.toString().c_str());
-    silentCurl(url);
+    auto response = silentCurl(url);
+    ASSERT_TRUE(response.ok());
+    EXPECT_EQ(response.value(), "Replace Host in partition and zone successfully");
 
     // Only read part allocation of test_space
     std::set<HostAddr> hosts;
@@ -235,7 +246,7 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
       iter->next();
     }
     EXPECT_EQ(hosts, afterUpdate);
-    EXPECT_EQ(dumpZones(gKVStore), zonesBeforeUpdate);
+    EXPECT_EQ(dumpZones(gKVStore), zonesAfterUpdate);
 
     std::string value;
     EXPECT_EQ(gKVStore->get(kDefaultSpaceId,
@@ -273,7 +284,9 @@ TEST(MetaHttpReplaceHandlerTest, ReplacePart) {
     static const char* tmp = "http://127.0.0.1:%d/replace?from=%s&to=%s&space=test_space&part=1";
     auto url = folly::stringPrintf(
         tmp, FLAGS_ws_http_port, sFrom.toString().c_str(), sTo.toString().c_str());
-    silentCurl(url);
+    auto response = silentCurl(url);
+    ASSERT_TRUE(response.ok());
+    EXPECT_EQ(response.value(), "Replace Host in partition and zone successfully");
   }
   {
     std::string value;

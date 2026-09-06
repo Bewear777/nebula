@@ -115,15 +115,25 @@ void MetaHttpReplaceHostHandler::onEOM() noexcept {
       break;
   }
 
-  if (replaceHostInPart(hostFrom_, hostTo_)) {
-    LOG(INFO) << "Replace Host in partition metadata successfully";
+  const bool replacingAllParts = !spaceId_.has_value() && !partId_.has_value();
+  bool replaceSucceed = replaceHostInPart(hostFrom_, hostTo_);
+  if (replaceSucceed && !replacingAllParts) {
+    replaceSucceed = replaceHostInZone(hostFrom_, hostTo_);
+  }
+
+  const char* successMsg = replacingAllParts ? "Replace Host in partition metadata successfully"
+                                             : "Replace Host in partition and zone successfully";
+  const char* failureMsg = replacingAllParts ? "Replace Host in partition metadata failed"
+                                             : "Replace Host in partition and zone failed";
+  if (replaceSucceed) {
+    LOG(INFO) << successMsg;
     ResponseBuilder(downstream_)
         .status(WebServiceUtils::to(HttpStatusCode::OK),
                 WebServiceUtils::toString(HttpStatusCode::OK))
-        .body("Replace Host in partition metadata successfully")
+        .body(successMsg)
         .sendWithEOM();
   } else {
-    LOG(INFO) << "Replace Host in partition metadata failed";
+    LOG(INFO) << failureMsg;
     ResponseBuilder(downstream_)
         .status(WebServiceUtils::to(HttpStatusCode::FORBIDDEN),
                 WebServiceUtils::toString(HttpStatusCode::FORBIDDEN))
@@ -147,12 +157,12 @@ void MetaHttpReplaceHostHandler::onError(ProxygenError error) noexcept {
 
 bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
                                                    const HostAddr& ipv4To) {
-  if (ipv4From == ipv4To) {
+  const bool replacingAllParts = !spaceId_.has_value() && !partId_.has_value();
+  if (replacingAllParts && ipv4From == ipv4To) {
     return true;
   }
 
   folly::SharedMutex::WriteHolder holder(LockUtils::lock());
-  const bool replacingAllParts = !spaceId_.has_value() && !partId_.has_value();
   std::vector<GraphSpaceID> allSpaceId;
   if (!spaceId_.has_value()) {
     const auto& spacePrefix = MetaKeyUtils::spacePrefix();
@@ -174,7 +184,7 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
   }
   LOG(INFO) << "AllSpaceId.size()=" << allSpaceId.size();
 
-  kvstore::BatchHolder batchHolder;
+  std::vector<nebula::kvstore::KV> data;
   size_t replacedParts = 0;
   for (const auto& spaceId : allSpaceId) {
     std::string partPrefix;
@@ -201,57 +211,75 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
         }
       }
       if (needUpdate) {
-        batchHolder.put(iter->key().str(), MetaKeyUtils::partVal(partHosts));
+        data.emplace_back(iter->key(), MetaKeyUtils::partVal(partHosts));
         ++replacedParts;
       }
       iter->next();
     }
   }
 
-  // Do not remove runtime metadata for a host unless this request replaces all partitions. A
-  // space/part-scoped request may leave other partitions on the source host.
-  if (replacingAllParts && replacedParts > 0) {
-    batchHolder.remove(MetaKeyUtils::hostDirKey(ipv4From.host, ipv4From.port));
-
-    const auto diskPartsPrefix = MetaKeyUtils::diskPartsPrefix(ipv4From);
-    std::unique_ptr<kvstore::KVIterator> diskPartsIter;
-    auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, diskPartsPrefix, &diskPartsIter);
-    if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
-      errMsg_ = folly::stringPrintf("Can't get disk parts prefix=%s", diskPartsPrefix.c_str());
-      LOG(INFO) << errMsg_;
-      return false;
-    }
-    while (diskPartsIter->valid()) {
-      batchHolder.remove(diskPartsIter->key().str());
-      diskPartsIter->next();
-    }
-
-    const auto& leaderPrefix = MetaKeyUtils::leaderPrefix();
-    std::unique_ptr<kvstore::KVIterator> leaderIter;
-    kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
-    if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
-      errMsg_ = folly::stringPrintf("Can't get leader prefix=%s", leaderPrefix.c_str());
-      LOG(INFO) << errMsg_;
-      return false;
-    }
-    while (leaderIter->valid()) {
-      HostAddr leader;
-      nebula::cpp2::ErrorCode code;
-      std::tie(leader, std::ignore, code) = MetaKeyUtils::parseLeaderValV3(leaderIter->val());
-      if (code != nebula::cpp2::ErrorCode::SUCCEEDED) {
-        errMsg_ = "Can't parse leader value";
-        LOG(INFO) << errMsg_;
-        return false;
-      }
-      if (leader == ipv4From) {
-        batchHolder.remove(leaderIter->key().str());
-      }
-      leaderIter->next();
-    }
+  // Preserve the original write path for space/part-scoped requests.
+  if (!replacingAllParts) {
+    bool updateSucceed{false};
+    folly::Baton<true, std::atomic> baton;
+    kvstore_->asyncMultiPut(
+        kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
+          updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
+          if (!updateSucceed) {
+            errMsg_ = folly::stringPrintf("Write parts to kvstore failed, code=%d",
+                                          static_cast<int32_t>(code));
+          }
+          baton.post();
+        });
+    baton.wait();
+    return updateSucceed;
   }
 
   if (replacedParts == 0) {
     return true;
+  }
+
+  kvstore::BatchHolder batchHolder;
+  for (auto& [key, value] : data) {
+    batchHolder.put(std::move(key), std::move(value));
+  }
+
+  batchHolder.remove(MetaKeyUtils::hostDirKey(ipv4From.host, ipv4From.port));
+
+  const auto diskPartsPrefix = MetaKeyUtils::diskPartsPrefix(ipv4From);
+  std::unique_ptr<kvstore::KVIterator> diskPartsIter;
+  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, diskPartsPrefix, &diskPartsIter);
+  if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
+    errMsg_ = folly::stringPrintf("Can't get disk parts prefix=%s", diskPartsPrefix.c_str());
+    LOG(INFO) << errMsg_;
+    return false;
+  }
+  while (diskPartsIter->valid()) {
+    batchHolder.remove(diskPartsIter->key().str());
+    diskPartsIter->next();
+  }
+
+  const auto& leaderPrefix = MetaKeyUtils::leaderPrefix();
+  std::unique_ptr<kvstore::KVIterator> leaderIter;
+  kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
+  if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
+    errMsg_ = folly::stringPrintf("Can't get leader prefix=%s", leaderPrefix.c_str());
+    LOG(INFO) << errMsg_;
+    return false;
+  }
+  while (leaderIter->valid()) {
+    HostAddr leader;
+    nebula::cpp2::ErrorCode code;
+    std::tie(leader, std::ignore, code) = MetaKeyUtils::parseLeaderValV3(leaderIter->val());
+    if (code != nebula::cpp2::ErrorCode::SUCCEEDED) {
+      errMsg_ = "Can't parse leader value";
+      LOG(INFO) << errMsg_;
+      return false;
+    }
+    if (leader == ipv4From) {
+      batchHolder.remove(leaderIter->key().str());
+    }
+    leaderIter->next();
   }
 
   LastUpdateTimeMan::update(&batchHolder, time::WallClock::fastNowInMilliSec());
@@ -264,6 +292,55 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
         updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
         if (!updateSucceed) {
           errMsg_ = folly::stringPrintf("Write batch to kvstore failed, code=%d",
+                                        static_cast<int32_t>(code));
+        }
+        baton.post();
+      });
+  baton.wait();
+  return updateSucceed;
+}
+
+bool MetaHttpReplaceHostHandler::replaceHostInZone(const HostAddr& ipv4From,
+                                                   const HostAddr& ipv4To) {
+  // Keep the legacy behavior for a single-partition replacement.
+  if (spaceId_.has_value() && partId_.has_value()) {
+    return true;
+  }
+
+  folly::SharedMutex::WriteHolder holder(LockUtils::lock());
+  const auto& zonePrefix = MetaKeyUtils::zonePrefix();
+  std::unique_ptr<kvstore::KVIterator> iter;
+  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, zonePrefix, &iter);
+  if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
+    errMsg_ = folly::stringPrintf("Can't get zone prefix=%s", zonePrefix.c_str());
+    LOG(INFO) << errMsg_;
+    return false;
+  }
+
+  std::vector<nebula::kvstore::KV> data;
+  while (iter->valid()) {
+    bool needUpdate = false;
+    auto hosts = MetaKeyUtils::parseZoneHosts(iter->val());
+    for (auto& host : hosts) {
+      if (host == ipv4From) {
+        host = ipv4To;
+        needUpdate = true;
+      }
+    }
+
+    if (needUpdate) {
+      data.emplace_back(iter->key(), MetaKeyUtils::zoneVal(hosts));
+    }
+    iter->next();
+  }
+
+  bool updateSucceed{false};
+  folly::Baton<true, std::atomic> baton;
+  kvstore_->asyncMultiPut(
+      kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
+        updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
+        if (!updateSucceed) {
+          errMsg_ = folly::stringPrintf("Write zones to kvstore failed, code=%d",
                                         static_cast<int32_t>(code));
         }
         baton.post();
