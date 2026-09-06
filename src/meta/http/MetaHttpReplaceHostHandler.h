@@ -21,16 +21,17 @@ using nebula::HttpCode;
 /**
  * @brief It will replace host info in meta partition table from
  *        backup host to current cluster host.
- *        It will replace given host in zone table and partition table. Notice that,
- *        it only replace the host without port.
+ *        A full replacement without space/part parameters only updates the partition
+ *        table and removes runtime metadata owned by the source host. Zone, machine,
+ *        and host registration metadata remain unchanged so callers can use the
+ *        regular ADD HOSTS and DROP HOSTS commands afterwards.
+ *        Scoped replacements preserve the legacy zone replacement behavior.
  *        Functions such as onRequest, onBody... and requestComplete are inherited
  *        from RequestHandler, we will check request parameters in onRequest and
  *        call main logic in onEOM.
  *
  */
 class MetaHttpReplaceHostHandler : public proxygen::RequestHandler {
-  FRIEND_TEST(MetaHttpReplaceHandlerTest, FooTest);
-
  public:
   MetaHttpReplaceHostHandler() = default;
 
