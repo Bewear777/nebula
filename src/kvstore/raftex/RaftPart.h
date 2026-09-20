@@ -419,7 +419,8 @@ class RaftPart : public std::enable_shared_from_this<RaftPart> {
            std::shared_ptr<folly::Executor> executor,
            std::shared_ptr<SnapshotManager> snapshotMan,
            std::shared_ptr<thrift::ThriftClientManager<cpp2::RaftexServiceAsyncClient>> clientMan,
-           std::shared_ptr<kvstore::DiskManager> diskMan);
+           std::shared_ptr<kvstore::DiskManager> diskMan,
+           int32_t walBufferSize = 0);
 
   using Status = cpp2::Status;
   using Role = cpp2::Role;

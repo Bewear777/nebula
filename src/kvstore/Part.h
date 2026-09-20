@@ -41,6 +41,7 @@ class Part : public raftex::RaftPart {
    * @param clientMan Client manager
    * @param diskMan Disk manager
    * @param vIdLen Vertex id length of space
+   * @param walBufferSize Per-part WAL buffer bytes; 0 uses the global flag
    */
   Part(GraphSpaceID spaceId,
        PartitionID partId,
@@ -53,7 +54,8 @@ class Part : public raftex::RaftPart {
        std::shared_ptr<raftex::SnapshotManager> snapshotMan,
        std::shared_ptr<RaftClient> clientMan,
        std::shared_ptr<DiskManager> diskMan,
-       int32_t vIdLen);
+       int32_t vIdLen,
+       int32_t walBufferSize = 0);
 
   virtual ~Part() {
     LOG(INFO) << idStr_ << "~Part()";

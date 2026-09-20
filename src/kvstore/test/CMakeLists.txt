@@ -103,6 +103,7 @@ nebula_add_test(
         nebula_store_test
     SOURCES
         NebulaStoreTest.cpp
+        ../../mock/AdHocSchemaManager.cpp
     OBJECTS
         ${KVSTORE_TEST_LIBS}
     LIBRARIES

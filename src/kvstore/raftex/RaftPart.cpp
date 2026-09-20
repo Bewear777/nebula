@@ -338,7 +338,8 @@ RaftPart::RaftPart(
     std::shared_ptr<folly::Executor> executor,
     std::shared_ptr<SnapshotManager> snapshotMan,
     std::shared_ptr<thrift::ThriftClientManager<cpp2::RaftexServiceAsyncClient>> clientMan,
-    std::shared_ptr<kvstore::DiskManager> diskMan)
+    std::shared_ptr<kvstore::DiskManager> diskMan,
+    int32_t walBufferSize)
     : idStr_{folly::stringPrintf(
           "[Port: %d, Space: %d, Part: %d] ", localAddr.port, spaceId, partId)},
       clusterId_{clusterId},
@@ -356,7 +357,13 @@ RaftPart::RaftPart(
       diskMan_(diskMan) {
   FileBasedWalPolicy policy;
   policy.fileSize = FLAGS_wal_file_size;
-  policy.bufferSize = FLAGS_wal_buffer_size;
+  if (walBufferSize < 0) {
+    LOG(ERROR) << idStr_ << "Invalid space WAL buffer size=" << walBufferSize
+               << "; falling back to global wal_buffer_size";
+  }
+  policy.bufferSize = walBufferSize > 0 ? walBufferSize : FLAGS_wal_buffer_size;
+  LOG(INFO) << idStr_ << "Initialize WAL buffer, bytes=" << policy.bufferSize
+            << ", source=" << (walBufferSize > 0 ? "space" : "global");
   policy.sync = FLAGS_wal_sync;
   FileBasedWalInfo info;
   info.idStr_ = idStr_;
