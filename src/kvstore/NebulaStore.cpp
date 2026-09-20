@@ -480,29 +480,43 @@ int32_t NebulaStore::getSpaceWalBufferSize(GraphSpaceID spaceId, PartitionID par
   if (spaceId == 0) {
     return 0;
   }
-  std::string config;
-  // Copy under gflags' lock: /flags may replace the string concurrently.
-  CHECK(gflags::GetCommandLineOption("space_wal_buffer_sizes", &config));
-  folly::dynamic overrides;
-  CHECK(parseSpaceWalBufferSizes(config, overrides));
-  if (overrides.empty()) {
-    return 0;
+  auto fallback = [spaceId, partId](const std::string& reason) {
+    LOG(ERROR) << "Cannot select space WAL buffer, space=" << spaceId
+               << ", part=" << partId << ", reason=" << reason
+               << "; falling back to global wal_buffer_size";
+    return int32_t{0};
+  };
+  try {
+    std::string config;
+    // Copy under gflags' lock: /flags may replace the string concurrently.
+    if (!gflags::GetCommandLineOption("space_wal_buffer_sizes", &config)) {
+      return fallback("failed to read space_wal_buffer_sizes");
+    }
+    folly::dynamic overrides;
+    if (!parseSpaceWalBufferSizes(config, overrides)) {
+      return fallback("invalid space_wal_buffer_sizes");
+    }
+    if (overrides.empty()) {
+      return 0;
+    }
+    if (options_.schemaMan_ == nullptr) {
+      return fallback("schema manager is unavailable");
+    }
+    auto name = options_.schemaMan_->toGraphSpaceName(spaceId);
+    if (!name.ok()) {
+      return fallback("space name lookup failed");
+    }
+    auto it = overrides.find(name.value());
+    if (it == overrides.items().end()) {
+      return 0;
+    }
+    const auto size = static_cast<int32_t>(it->second.asInt());
+    LOG(INFO) << "Space WAL buffer override, space=" << spaceId
+              << ", name=" << name.value() << ", part=" << partId << ", bytes=" << size;
+    return size;
+  } catch (const std::exception& e) {
+    return fallback(e.what());
   }
-  CHECK(options_.schemaMan_ != nullptr)
-      << "Schema manager is required for space_wal_buffer_sizes";
-  auto name = options_.schemaMan_->toGraphSpaceName(spaceId);
-  // A lookup failure is not a missing override. Never silently initialize a
-  // partition with an unintended capacity. Storage initializes Meta first.
-  CHECK(name.ok()) << "Cannot resolve WAL buffer space name, space=" << spaceId
-                   << ", part=" << partId;
-  auto it = overrides.find(name.value());
-  if (it == overrides.items().end()) {
-    return 0;
-  }
-  const auto size = static_cast<int32_t>(it->second.asInt());
-  LOG(INFO) << "Space WAL buffer override, space=" << spaceId
-            << ", name=" << name.value() << ", part=" << partId << ", bytes=" << size;
-  return size;
 }
 
 void NebulaStore::addPart(GraphSpaceID spaceId,

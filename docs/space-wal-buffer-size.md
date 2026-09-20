@@ -36,9 +36,15 @@ mapping again; the value is not stored in Meta space properties.
 
 Meta's internal space (ID 0) and Listener constructors keep the global default.
 No nGQL grammar, Meta schema, WAL format or RocksDB options are changed.
-When overrides are nonempty, a missing schema manager or failed space-name
-lookup triggers CHECK and terminates storaged rather than silently choosing an
-unintended default. This minimal implementation does not add retry handling.
+At partition initialization, flag-read failures, invalid mappings, missing schema
+managers, space-name lookup failures and caught configuration exceptions log
+ERROR and fall back to the process-wide wal_buffer_size. No CHECK is added for
+these failures. An empty mapping or a missing space entry is a normal fallback.
+A negative explicit override also logs ERROR and falls back to the global flag.
+The /flags validator still rejects invalid updates and preserves the previous
+valid mapping. Startup flag validation retains the normal gflags behavior.
+A partition initialized using the fallback keeps that capacity until it is
+reconstructed; fixing the mapping does not resize its running buffer.
 
 Initialization logs report the effective capacity and whether it comes from
 the space override or global flag.

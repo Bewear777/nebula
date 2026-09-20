@@ -26,6 +26,7 @@
 DECLARE_uint32(raft_heartbeat_interval_secs);
 DECLARE_bool(auto_remove_invalid_space);
 DECLARE_bool(wal_sync);
+DECLARE_string(space_wal_buffer_sizes);
 const int32_t kDefaultVidLen = 8;
 using nebula::meta::PartHosts;
 
@@ -88,6 +89,27 @@ TEST(NebulaStoreTest, SpaceWalBufferSizes) {
     EXPECT_EQ(0, store->getSpaceWalBufferSize(3, 1));
     EXPECT_EQ(0, store->getSpaceWalBufferSize(0, 1));
     ASSERT_EQ(3, store->spaces_.size());
+
+    // Configuration failures must not terminate the process or prevent
+    // constructing a partition with the global default.
+    store->options_.schemaMan_ = nullptr;
+    EXPECT_EQ(0, store->getSpaceWalBufferSize(1, 1));
+    store->addPart(1, 2, false, {});
+    EXPECT_EQ(1, store->spaces_.at(1)->parts_.count(2));
+    store->options_.schemaMan_ = &schema;
+    {
+      gflags::FlagSaver restoreMapping;
+      // Deliberately bypass the update validator to exercise defensive reads.
+      // No configuration writers run concurrently in this test.
+      for (const auto& invalid : {"not-json", "[]", R"({"1":-1})",
+                                  R"({"1":"1024"})"}) {
+        FLAGS_space_wal_buffer_sizes = invalid;
+        EXPECT_EQ(0, store->getSpaceWalBufferSize(1, 1));
+      }
+      FLAGS_space_wal_buffer_sizes = "not-json";
+      store->addPart(2, 2, false, {});
+      EXPECT_EQ(1, store->spaces_.at(2)->parts_.count(2));
+    }
 
     auto originalPart = store->spaces_.at(1)->parts_.at(1);
     auto originalWal = originalPart->wal();

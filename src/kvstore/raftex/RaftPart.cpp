@@ -5,11 +5,9 @@
 
 #include "kvstore/raftex/RaftPart.h"
 
-#include <folly/Conv.h>
 #include <folly/executors/IOThreadPoolExecutor.h>
 #include <folly/gen/Base.h>
 #include <folly/io/async/EventBaseManager.h>
-#include <gflags/gflags.h>
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
 #include "common/base/Base.h"
@@ -39,6 +37,7 @@ DEFINE_bool(trace_raft, false, "Enable trace one raft request");
 
 DECLARE_int32(wal_ttl);
 DECLARE_int64(wal_file_size);
+DECLARE_int32(wal_buffer_size);
 DECLARE_bool(wal_sync);
 
 namespace nebula {
@@ -358,14 +357,11 @@ RaftPart::RaftPart(
       diskMan_(diskMan) {
   FileBasedWalPolicy policy;
   policy.fileSize = FLAGS_wal_file_size;
-  CHECK_GE(walBufferSize, 0);
-  if (walBufferSize > 0) {
-    policy.bufferSize = walBufferSize;
-  } else {
-    std::string globalValue;
-    CHECK(gflags::GetCommandLineOption("wal_buffer_size", &globalValue));
-    policy.bufferSize = folly::to<int32_t>(globalValue);
+  if (walBufferSize < 0) {
+    LOG(ERROR) << idStr_ << "Invalid space WAL buffer size=" << walBufferSize
+               << "; falling back to global wal_buffer_size";
   }
+  policy.bufferSize = walBufferSize > 0 ? walBufferSize : FLAGS_wal_buffer_size;
   LOG(INFO) << idStr_ << "Initialize WAL buffer, bytes=" << policy.bufferSize
             << ", source=" << (walBufferSize > 0 ? "space" : "global");
   policy.sync = FLAGS_wal_sync;
