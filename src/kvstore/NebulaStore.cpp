@@ -7,9 +7,12 @@
 
 #include <folly/Likely.h>
 #include <folly/ScopeGuard.h>
+#include <folly/json.h>
+#include <gflags/gflags.h>
 #include <thrift/lib/cpp/util/EnumUtils.h>
 
 #include <algorithm>
+#include <limits>
 
 #include "common/fs/FileUtils.h"
 #include "common/network/NetworkUtils.h"
@@ -23,6 +26,44 @@ DEFINE_string(engine_type, "rocksdb", "rocksdb, memory...");
 DEFINE_int32(num_workers, 4, "Number of worker threads");
 DEFINE_int32(clean_wal_interval_secs, 600, "interval to trigger clean expired wal");
 DEFINE_bool(auto_remove_invalid_space, true, "whether remove data of invalid space when restart");
+DEFINE_string(space_wal_buffer_sizes,
+              "{}",
+              "JSON object mapping space names to per-part WAL buffer sizes in bytes");
+
+namespace {
+
+bool parseSpaceWalBufferSizes(const std::string& value, folly::dynamic& result) {
+  try {
+    auto parsed = folly::parseJson(value);
+    if (!parsed.isObject()) {
+      LOG(ERROR) << "space_wal_buffer_sizes must be a JSON object";
+      return false;
+    }
+    for (const auto& item : parsed.items()) {
+      if (!item.first.isString() || item.first.asString().empty() ||
+          !item.second.isInt() || item.second.asInt() <= 0 ||
+          item.second.asInt() > std::numeric_limits<int32_t>::max()) {
+        LOG(ERROR) << "space_wal_buffer_sizes requires nonempty space names and integer sizes "
+                      "in [1, INT32_MAX]";
+        return false;
+      }
+    }
+    result = std::move(parsed);
+    return true;
+  } catch (const std::exception& e) {
+    LOG(ERROR) << "Invalid space_wal_buffer_sizes: " << e.what();
+    return false;
+  }
+}
+
+bool validateSpaceWalBufferSizes(const char*, const std::string& value) {
+  folly::dynamic parsed;
+  return parseSpaceWalBufferSizes(value, parsed);
+}
+
+}  // namespace
+
+DEFINE_validator(space_wal_buffer_sizes, &validateSpaceWalBufferSizes);
 
 DECLARE_bool(rocksdb_disable_wal);
 DECLARE_int32(rocksdb_backup_interval_secs);
@@ -434,6 +475,36 @@ int32_t NebulaStore::getSpaceVidLen(GraphSpaceID spaceId) {
   return vIdLen;
 }
 
+int32_t NebulaStore::getSpaceWalBufferSize(GraphSpaceID spaceId, PartitionID partId) {
+  // The Meta Raft group must keep using its process-wide default.
+  if (spaceId == 0) {
+    return 0;
+  }
+  std::string config;
+  // Copy under gflags' lock: /flags may replace the string concurrently.
+  CHECK(gflags::GetCommandLineOption("space_wal_buffer_sizes", &config));
+  folly::dynamic overrides;
+  CHECK(parseSpaceWalBufferSizes(config, overrides));
+  if (overrides.empty()) {
+    return 0;
+  }
+  CHECK(options_.schemaMan_ != nullptr)
+      << "Schema manager is required for space_wal_buffer_sizes";
+  auto name = options_.schemaMan_->toGraphSpaceName(spaceId);
+  // A lookup failure is not a missing override. Never silently initialize a
+  // partition with an unintended capacity. Storage initializes Meta first.
+  CHECK(name.ok()) << "Cannot resolve WAL buffer space name, space=" << spaceId
+                   << ", part=" << partId;
+  auto it = overrides.find(name.value());
+  if (it == overrides.items().end()) {
+    return 0;
+  }
+  const auto size = static_cast<int32_t>(it->second.asInt());
+  LOG(INFO) << "Space WAL buffer override, space=" << spaceId
+            << ", name=" << name.value() << ", part=" << partId << ", bytes=" << size;
+  return size;
+}
+
 void NebulaStore::addPart(GraphSpaceID spaceId,
                           PartitionID partId,
                           bool asLearner,
@@ -498,7 +569,8 @@ std::shared_ptr<Part> NebulaStore::newPart(GraphSpaceID spaceId,
                                      snapshot_,
                                      clientMan_,
                                      diskMan_,
-                                     getSpaceVidLen(spaceId));
+                                     getSpaceVidLen(spaceId),
+                                     getSpaceWalBufferSize(spaceId, partId));
   std::vector<HostAddr> peersWithoutMe;
   for (auto& p : raftPeers) {
     if (p != raftAddr_) {

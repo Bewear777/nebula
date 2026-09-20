@@ -47,6 +47,7 @@ struct SpaceListenerInfo {
  */
 class NebulaStore : public KVStore, public Handler {
   FRIEND_TEST(NebulaStoreTest, SimpleTest);
+  FRIEND_TEST(NebulaStoreTest, SpaceWalBufferSizes);
   FRIEND_TEST(NebulaStoreTest, MultiPathTest);
   FRIEND_TEST(NebulaStoreTest, PartsTest);
   FRIEND_TEST(NebulaStoreTest, PersistPeersTest);
@@ -858,6 +859,9 @@ class NebulaStore : public KVStore, public Handler {
    * @return int32_t Vertex id length
    */
   int32_t getSpaceVidLen(GraphSpaceID spaceId);
+
+  // Zero means no override: use the process-wide wal_buffer_size.
+  int32_t getSpaceWalBufferSize(GraphSpaceID spaceId, PartitionID partId);
 
   /**
    * @brief Remove a space's directory

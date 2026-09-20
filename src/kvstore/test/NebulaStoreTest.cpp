@@ -3,6 +3,7 @@
  * This source code is licensed under Apache 2.0 License.
  */
 
+#include <gflags/gflags.h>
 #include <gtest/gtest.h>
 #include <rocksdb/db.h>
 #include <thrift/lib/cpp/concurrency/ThreadManager.h>
@@ -20,6 +21,7 @@
 #include "kvstore/RocksEngine.h"
 #include "kvstore/RocksEngineConfig.h"
 #include "meta/ActiveHostsMan.h"
+#include "mock/AdHocSchemaManager.h"
 
 DECLARE_uint32(raft_heartbeat_interval_secs);
 DECLARE_bool(auto_remove_invalid_space);
@@ -42,6 +44,64 @@ void dump(const std::vector<T>& v) {
 std::shared_ptr<folly::IOThreadPoolExecutor> getHandlers() {
   static auto handlersPool = std::make_shared<folly::IOThreadPoolExecutor>(1);
   return handlersPool;
+}
+
+TEST(NebulaStoreTest, SpaceWalBufferFlagValidation) {
+  gflags::FlagSaver restoreFlags;
+  const std::string valid = R"({"space_a":1048576,"space_b":2147483647})";
+  ASSERT_FALSE(gflags::SetCommandLineOption("space_wal_buffer_sizes", valid.c_str()).empty());
+  for (const auto& invalid : {"not-json", "[]", "null", R"({"a":0})", R"({"a":-1})",
+                              R"({"a":2147483648})", R"({"a":1.5})", R"({"a":"1024"})",
+                              R"({"a":true})", R"({"":1024})"}) {
+    EXPECT_TRUE(gflags::SetCommandLineOption("space_wal_buffer_sizes", invalid).empty())
+        << invalid;
+    std::string current;
+    ASSERT_TRUE(gflags::GetCommandLineOption("space_wal_buffer_sizes", &current));
+    EXPECT_EQ(valid, current);
+  }
+  EXPECT_FALSE(gflags::SetCommandLineOption("space_wal_buffer_sizes", "{}").empty());
+}
+
+TEST(NebulaStoreTest, SpaceWalBufferSizes) {
+  gflags::FlagSaver restoreFlags;
+  ASSERT_FALSE(gflags::SetCommandLineOption(
+      "space_wal_buffer_sizes", R"({"1":1048576,"2":4194304})").empty());
+  fs::TempDir rootPath("/tmp/nebula_space_wal_test.XXXXXX");
+  mock::AdHocSchemaManager schema;
+  auto ioPool = std::make_shared<folly::IOThreadPoolExecutor>(1);
+
+  // Exercise both first initialization and loading existing partitions.
+  for (int run = 0; run < 2; ++run) {
+    auto partMan = std::make_unique<MemPartManager>();
+    for (GraphSpaceID space = 1; space <= 3; ++space) {
+      partMan->partsMap_[space][1] = PartHosts();
+    }
+    KVOptions options;
+    options.dataPaths_.emplace_back(rootPath.path());
+    options.partMan_ = std::move(partMan);
+    options.schemaMan_ = &schema;
+    auto store = std::make_unique<NebulaStore>(
+        std::move(options), ioPool, HostAddr("", 0), getHandlers());
+    ASSERT_TRUE(store->init());
+    EXPECT_EQ(1048576, store->getSpaceWalBufferSize(1, 1));
+    EXPECT_EQ(4194304, store->getSpaceWalBufferSize(2, 1));
+    EXPECT_EQ(0, store->getSpaceWalBufferSize(3, 1));
+    EXPECT_EQ(0, store->getSpaceWalBufferSize(0, 1));
+    ASSERT_EQ(3, store->spaces_.size());
+
+    auto originalPart = store->spaces_.at(1)->parts_.at(1);
+    auto originalWal = originalPart->wal();
+    ASSERT_FALSE(gflags::SetCommandLineOption(
+        "space_wal_buffer_sizes", R"({"1":2097152,"2":4194304})").empty());
+    EXPECT_EQ(2097152, store->getSpaceWalBufferSize(1, 1));
+    // Updating the flag must not replace a running partition's WAL.
+    EXPECT_EQ(originalWal, originalPart->wal());
+
+    ASSERT_FALSE(gflags::SetCommandLineOption("space_wal_buffer_sizes", "{}").empty());
+    EXPECT_EQ(0, store->getSpaceWalBufferSize(1, 1));
+    ASSERT_FALSE(gflags::SetCommandLineOption(
+        "space_wal_buffer_sizes", R"({"1":1048576,"2":4194304})").empty());
+  }
 }
 
 TEST(NebulaStoreTest, SimpleTest) {
