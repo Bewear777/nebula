@@ -32,6 +32,8 @@ using nebula::HttpCode;
  *
  */
 class MetaHttpReplaceHostHandler : public proxygen::RequestHandler {
+  FRIEND_TEST(MetaHttpReplaceHandlerTest, FooTest);
+
  public:
   MetaHttpReplaceHostHandler() = default;
 

@@ -185,7 +185,6 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
   LOG(INFO) << "AllSpaceId.size()=" << allSpaceId.size();
 
   std::vector<nebula::kvstore::KV> data;
-  size_t replacedParts = 0;
   for (const auto& spaceId : allSpaceId) {
     std::string partPrefix;
     if (!partId_.has_value()) {
@@ -212,7 +211,6 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
       }
       if (needUpdate) {
         data.emplace_back(iter->key(), MetaKeyUtils::partVal(partHosts));
-        ++replacedParts;
       }
       iter->next();
     }
@@ -225,20 +223,14 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
     kvstore_->asyncMultiPut(
         kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
           updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
-          if (!updateSucceed) {
-            errMsg_ = folly::stringPrintf("Write parts to kvstore failed, code=%d",
-                                          static_cast<int32_t>(code));
-          }
+          errMsg_ = folly::stringPrintf("Write to kvstore failed, %s , %d", __func__, __LINE__);
           baton.post();
         });
     baton.wait();
     return updateSucceed;
   }
 
-  if (replacedParts == 0) {
-    return true;
-  }
-
+  // Clean stale source metadata even if an earlier replacement already changed all parts.
   kvstore::BatchHolder batchHolder;
   for (auto& [key, value] : data) {
     batchHolder.put(std::move(key), std::move(value));
@@ -302,11 +294,10 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
 
 bool MetaHttpReplaceHostHandler::replaceHostInZone(const HostAddr& ipv4From,
                                                    const HostAddr& ipv4To) {
-  // Keep the legacy behavior for a single-partition replacement.
+  // when space and part are specified, skip replace host in zone
   if (spaceId_.has_value() && partId_.has_value()) {
     return true;
   }
-
   folly::SharedMutex::WriteHolder holder(LockUtils::lock());
   const auto& zonePrefix = MetaKeyUtils::zonePrefix();
   std::unique_ptr<kvstore::KVIterator> iter;
@@ -320,6 +311,7 @@ bool MetaHttpReplaceHostHandler::replaceHostInZone(const HostAddr& ipv4From,
   std::vector<nebula::kvstore::KV> data;
   while (iter->valid()) {
     bool needUpdate = false;
+    auto zoneName = MetaKeyUtils::parseZoneName(iter->key());
     auto hosts = MetaKeyUtils::parseZoneHosts(iter->val());
     for (auto& host : hosts) {
       if (host == ipv4From) {
@@ -339,13 +331,11 @@ bool MetaHttpReplaceHostHandler::replaceHostInZone(const HostAddr& ipv4From,
   kvstore_->asyncMultiPut(
       kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
         updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
-        if (!updateSucceed) {
-          errMsg_ = folly::stringPrintf("Write zones to kvstore failed, code=%d",
-                                        static_cast<int32_t>(code));
-        }
+        errMsg_ = folly::stringPrintf("Write to kvstore failed, %s , %d", __func__, __LINE__);
         baton.post();
       });
   baton.wait();
+
   return updateSucceed;
 }
 
