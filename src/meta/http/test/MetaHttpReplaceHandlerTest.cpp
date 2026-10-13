@@ -132,7 +132,8 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceAll) {
 
   {
     TestUtils::doPut(gKVStore,
-                     {{MetaKeyUtils::hostDirKey(sFrom.host, sFrom.port), "source host dir"}});
+                     {{MetaKeyUtils::hostDirKey(sFrom.host, sFrom.port), "source host dir"},
+                      {MetaKeyUtils::leaderKey(1, 4), MetaKeyUtils::leaderValV3(sFrom, 4)}});
     static const char* tmp = "http://127.0.0.1:%d/replace?from=%s&to=%s";
     auto url = folly::stringPrintf(
         tmp, FLAGS_ws_http_port, sFrom.toString().c_str(), sFrom.toString().c_str());
@@ -146,6 +147,9 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceAll) {
                             MetaKeyUtils::hostDirKey(sFrom.host, sFrom.port),
                             &value),
               nebula::cpp2::ErrorCode::SUCCEEDED);
+    ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, MetaKeyUtils::leaderKey(1, 4), &value),
+              nebula::cpp2::ErrorCode::SUCCEEDED);
+    EXPECT_EQ(value, MetaKeyUtils::leaderValV3(sFrom, 4));
   }
 
   {
@@ -173,7 +177,8 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceAll) {
                             kDefaultPartId,
                             MetaKeyUtils::hostDirKey(sFrom.host, sFrom.port),
                             &value),
-              nebula::cpp2::ErrorCode::E_KEY_NOT_FOUND);
+              nebula::cpp2::ErrorCode::SUCCEEDED);
+    EXPECT_EQ(value, "source host dir");
     EXPECT_EQ(gKVStore->get(kDefaultSpaceId,
                             kDefaultPartId,
                             MetaKeyUtils::hostDirKey(retainedHost.host, retainedHost.port),
@@ -183,7 +188,8 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceAll) {
                             kDefaultPartId,
                             MetaKeyUtils::diskPartsKey(sFrom, 1, "/data/source"),
                             &value),
-              nebula::cpp2::ErrorCode::E_KEY_NOT_FOUND);
+              nebula::cpp2::ErrorCode::SUCCEEDED);
+    EXPECT_EQ(value, "source disk parts");
     EXPECT_EQ(gKVStore->get(kDefaultSpaceId,
                             kDefaultPartId,
                             MetaKeyUtils::diskPartsKey(retainedHost, 1, "/data/retained"),
@@ -200,20 +206,21 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceAll) {
   }
 }
 
-TEST(MetaHttpReplaceHandlerTest, CleanRuntimeMetadataWithoutPartReferences) {
+TEST(MetaHttpReplaceHandlerTest, CleanLeaderMetadataWithoutPartReferences) {
   TestUtils::assembleSpace(gKVStore, 1, 4, 1, 4);
   HostAddr source{"0", 0};
   HostAddr destination{"66.66.66.66", 6666};
   HostAddr sameHostOtherPort{"0", 99};
   const auto zonesBefore = dumpZones(gKVStore);
 
-  // Simulate a previous parts-only replacement that left the source runtime metadata behind.
-  const std::vector<std::string> staleKeys{MetaKeyUtils::hostDirKey(source.host, source.port),
-                                           MetaKeyUtils::diskPartsKey(source, 1, "/data/source"),
-                                           MetaKeyUtils::diskPartsKey(source, 1, "/data/other"),
-                                           MetaKeyUtils::diskPartsKey(source, 9, "/data/source"),
-                                           MetaKeyUtils::leaderKey(1, 4)};
+  // Simulate a previous parts-only replacement that left the source leader record behind.
+  const auto staleLeaderKey = MetaKeyUtils::leaderKey(1, 4);
   const std::vector<kvstore::KV> retainedData{
+      {MetaKeyUtils::hostDirKey(source.host, source.port), "source dir"},
+      {MetaKeyUtils::diskPartsKey(source, 1, "/data/source"), "source disk parts"},
+      {MetaKeyUtils::diskPartsKey(source, 1, "/data/other"), "other source disk parts"},
+      {MetaKeyUtils::diskPartsKey(source, 9, "/data/source"), "other space disk parts"},
+      {MetaKeyUtils::leaderKey(1, 3), MetaKeyUtils::leaderValV3(sameHostOtherPort, 4)},
       {MetaKeyUtils::hostDirKey(destination.host, destination.port), "destination dir"},
       {MetaKeyUtils::diskPartsKey(destination, 1, "/data/source"), "destination disk parts"},
       {MetaKeyUtils::hostDirKey(sameHostOtherPort.host, sameHostOtherPort.port), "other port dir"},
@@ -222,11 +229,7 @@ TEST(MetaHttpReplaceHandlerTest, CleanRuntimeMetadataWithoutPartReferences) {
 
   std::vector<kvstore::KV> data{
       {MetaKeyUtils::partKey(1, 4), MetaKeyUtils::partVal({destination})},
-      {staleKeys[0], "source dir"},
-      {staleKeys[1], "source disk parts"},
-      {staleKeys[2], "other source disk parts"},
-      {staleKeys[3], "other space disk parts"},
-      {staleKeys[4], MetaKeyUtils::leaderValV3(source, 4)},
+      {staleLeaderKey, MetaKeyUtils::leaderValV3(source, 4)},
       {MetaKeyUtils::lastUpdateTimeKey(), MetaKeyUtils::lastUpdateTimeVal(1)}};
   data.insert(data.end(), retainedData.begin(), retainedData.end());
   TestUtils::doPut(gKVStore, std::move(data));
@@ -244,10 +247,8 @@ TEST(MetaHttpReplaceHandlerTest, CleanRuntimeMetadataWithoutPartReferences) {
   EXPECT_EQ(dumpZones(gKVStore), zonesBefore);
 
   std::string value;
-  for (const auto& key : staleKeys) {
-    EXPECT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, key, &value),
-              nebula::cpp2::ErrorCode::E_KEY_NOT_FOUND);
-  }
+  EXPECT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, staleLeaderKey, &value),
+            nebula::cpp2::ErrorCode::E_KEY_NOT_FOUND);
   for (const auto& kv : retainedData) {
     ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, kv.first, &value),
               nebula::cpp2::ErrorCode::SUCCEEDED);

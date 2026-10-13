@@ -22,8 +22,8 @@ using nebula::HttpCode;
  * @brief It will replace host info in meta partition table from
  *        backup host to current cluster host.
  *        A full replacement without space/part parameters only updates the partition
- *        table and removes runtime metadata owned by the source host. Zone, machine,
- *        and host registration metadata remain unchanged so callers can use the
+ *        table and removes leader records owned by the source host. Directory, disk-part,
+ *        zone, machine, and host registration metadata remain unchanged so callers can use the
  *        regular ADD HOSTS and DROP HOSTS commands afterwards.
  *        Scoped replacements preserve the legacy zone replacement behavior.
  *        Functions such as onRequest, onBody... and requestComplete are inherited

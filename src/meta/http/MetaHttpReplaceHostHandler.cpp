@@ -230,30 +230,15 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
     return updateSucceed;
   }
 
-  // Clean stale source metadata even if an earlier replacement already changed all parts.
+  // Clean stale source leader records even if an earlier replacement already changed all parts.
   kvstore::BatchHolder batchHolder;
   for (auto& [key, value] : data) {
     batchHolder.put(std::move(key), std::move(value));
   }
 
-  batchHolder.remove(MetaKeyUtils::hostDirKey(ipv4From.host, ipv4From.port));
-
-  const auto diskPartsPrefix = MetaKeyUtils::diskPartsPrefix(ipv4From);
-  std::unique_ptr<kvstore::KVIterator> diskPartsIter;
-  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, diskPartsPrefix, &diskPartsIter);
-  if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
-    errMsg_ = folly::stringPrintf("Can't get disk parts prefix=%s", diskPartsPrefix.c_str());
-    LOG(INFO) << errMsg_;
-    return false;
-  }
-  while (diskPartsIter->valid()) {
-    batchHolder.remove(diskPartsIter->key().str());
-    diskPartsIter->next();
-  }
-
   const auto& leaderPrefix = MetaKeyUtils::leaderPrefix();
   std::unique_ptr<kvstore::KVIterator> leaderIter;
-  kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
+  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
   if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
     errMsg_ = folly::stringPrintf("Can't get leader prefix=%s", leaderPrefix.c_str());
     LOG(INFO) << errMsg_;
