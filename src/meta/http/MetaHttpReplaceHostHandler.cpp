@@ -12,7 +12,10 @@
 #include "common/network/NetworkUtils.h"
 #include "common/process/ProcessUtils.h"
 #include "common/thread/GenericThreadPool.h"
+#include "common/time/WallClock.h"
 #include "common/utils/MetaKeyUtils.h"
+#include "kvstore/LogEncoder.h"
+#include "meta/ActiveHostsMan.h"
 #include "meta/processors/Common.h"
 #include "webservice/Common.h"
 #include "webservice/WebService.h"
@@ -112,15 +115,15 @@ void MetaHttpReplaceHostHandler::onEOM() noexcept {
       break;
   }
 
-  if (replaceHostInPart(hostFrom_, hostTo_) && replaceHostInZone(hostFrom_, hostTo_)) {
-    LOG(INFO) << "Replace Host in partition and zone successfully";
+  if (replaceHostInPart(hostFrom_, hostTo_)) {
+    LOG(INFO) << "Replace Host in partition metadata successfully";
     ResponseBuilder(downstream_)
         .status(WebServiceUtils::to(HttpStatusCode::OK),
                 WebServiceUtils::toString(HttpStatusCode::OK))
-        .body("Replace Host in partition and zone successfully")
+        .body("Replace Host in partition metadata successfully")
         .sendWithEOM();
   } else {
-    LOG(INFO) << "Replace Host in partition and zone failed";
+    LOG(INFO) << "Replace Host in partition metadata failed";
     ResponseBuilder(downstream_)
         .status(WebServiceUtils::to(HttpStatusCode::FORBIDDEN),
                 WebServiceUtils::toString(HttpStatusCode::FORBIDDEN))
@@ -144,6 +147,10 @@ void MetaHttpReplaceHostHandler::onError(ProxygenError error) noexcept {
 
 bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
                                                    const HostAddr& ipv4To) {
+  if (ipv4From == ipv4To) {
+    return true;
+  }
+
   folly::SharedMutex::WriteHolder holder(LockUtils::lock());
   std::vector<GraphSpaceID> allSpaceId;
   if (!spaceId_.has_value()) {
@@ -198,62 +205,56 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
     }
   }
 
-  bool updateSucceed{false};
-  folly::Baton<true, std::atomic> baton;
-  kvstore_->asyncMultiPut(
-      kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
-        updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
-        errMsg_ = folly::stringPrintf("Write to kvstore failed, %s , %d", __func__, __LINE__);
-        baton.post();
-      });
-  baton.wait();
-  return updateSucceed;
-}
-
-bool MetaHttpReplaceHostHandler::replaceHostInZone(const HostAddr& ipv4From,
-                                                   const HostAddr& ipv4To) {
-  // when space and part are specified, skip replace host in zone
-  if (spaceId_.has_value() && partId_.has_value()) {
-    return true;
+  // Clean source leader records in the request scope, including retries after peers have changed.
+  kvstore::BatchHolder batchHolder;
+  for (auto& [key, value] : data) {
+    batchHolder.put(std::move(key), std::move(value));
   }
-  folly::SharedMutex::WriteHolder holder(LockUtils::lock());
-  const auto& zonePrefix = MetaKeyUtils::zonePrefix();
-  std::unique_ptr<kvstore::KVIterator> iter;
-  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, zonePrefix, &iter);
+
+  const auto& leaderPrefix = MetaKeyUtils::leaderPrefix();
+  std::unique_ptr<kvstore::KVIterator> leaderIter;
+  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
   if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
-    errMsg_ = folly::stringPrintf("Can't get zone prefix=%s", zonePrefix.c_str());
+    errMsg_ = folly::stringPrintf("Can't get leader prefix=%s", leaderPrefix.c_str());
     LOG(INFO) << errMsg_;
     return false;
   }
-
-  std::vector<nebula::kvstore::KV> data;
-  while (iter->valid()) {
-    bool needUpdate = false;
-    auto zoneName = MetaKeyUtils::parseZoneName(iter->key());
-    auto hosts = MetaKeyUtils::parseZoneHosts(iter->val());
-    for (auto& host : hosts) {
-      if (host == ipv4From) {
-        host = ipv4To;
-        needUpdate = true;
-      }
+  while (leaderIter->valid()) {
+    const auto [spaceId, partId] = MetaKeyUtils::parseLeaderKeyV3(leaderIter->key());
+    if ((spaceId_.has_value() && spaceId != spaceId_.value()) ||
+        (partId_.has_value() && partId != partId_.value())) {
+      leaderIter->next();
+      continue;
     }
-
-    if (needUpdate) {
-      data.emplace_back(iter->key(), MetaKeyUtils::zoneVal(hosts));
+    HostAddr leader;
+    nebula::cpp2::ErrorCode code;
+    std::tie(leader, std::ignore, code) = MetaKeyUtils::parseLeaderValV3(leaderIter->val());
+    if (code != nebula::cpp2::ErrorCode::SUCCEEDED) {
+      errMsg_ = "Can't parse leader value";
+      LOG(INFO) << errMsg_;
+      return false;
     }
-    iter->next();
+    if (leader == ipv4From) {
+      batchHolder.remove(leaderIter->key().str());
+    }
+    leaderIter->next();
   }
+
+  LastUpdateTimeMan::update(&batchHolder, time::WallClock::fastNowInMilliSec());
 
   bool updateSucceed{false};
   folly::Baton<true, std::atomic> baton;
-  kvstore_->asyncMultiPut(
-      kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
+  auto batch = kvstore::encodeBatchValue(batchHolder.getBatch());
+  kvstore_->asyncAppendBatch(
+      kDefaultSpaceId, kDefaultPartId, std::move(batch), [&](nebula::cpp2::ErrorCode code) {
         updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
-        errMsg_ = folly::stringPrintf("Write to kvstore failed, %s , %d", __func__, __LINE__);
+        if (!updateSucceed) {
+          errMsg_ = folly::stringPrintf("Write batch to kvstore failed, code=%d",
+                                        static_cast<int32_t>(code));
+        }
         baton.post();
       });
   baton.wait();
-
   return updateSucceed;
 }
 
