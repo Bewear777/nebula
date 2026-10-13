@@ -296,15 +296,6 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
   afterUpdate.erase(sFrom);
   afterUpdate.insert(sTo);
   const auto zonesBeforeUpdate = dumpZones(gKVStore);
-  auto zonesAfterUpdate = zonesBeforeUpdate;
-  for (auto& [zoneName, hosts] : zonesAfterUpdate) {
-    UNUSED(zoneName);
-    for (auto& host : hosts) {
-      if (host == sFrom) {
-        host = sTo;
-      }
-    }
-  }
 
   {
     std::vector<kvstore::KV> runtimeData{
@@ -318,7 +309,7 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
         tmp, FLAGS_ws_http_port, sFrom.toString().c_str(), sTo.toString().c_str());
     auto response = silentCurl(url);
     ASSERT_TRUE(response.ok());
-    EXPECT_EQ(response.value(), "Replace Host in partition and zone successfully");
+    EXPECT_EQ(response.value(), "Replace Host in partition metadata successfully");
 
     // Only read part allocation of test_space
     std::set<HostAddr> hosts;
@@ -334,7 +325,7 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
       iter->next();
     }
     EXPECT_EQ(hosts, afterUpdate);
-    EXPECT_EQ(dumpZones(gKVStore), zonesAfterUpdate);
+    EXPECT_EQ(dumpZones(gKVStore), zonesBeforeUpdate);
 
     std::string value;
     EXPECT_EQ(gKVStore->get(kDefaultSpaceId,
@@ -348,7 +339,7 @@ TEST(MetaHttpReplaceHandlerTest, ReplaceSpace) {
                             &value),
               nebula::cpp2::ErrorCode::SUCCEEDED);
     EXPECT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, MetaKeyUtils::leaderKey(1, 4), &value),
-              nebula::cpp2::ErrorCode::SUCCEEDED);
+              nebula::cpp2::ErrorCode::E_KEY_NOT_FOUND);
   }
 }
 
@@ -374,7 +365,7 @@ TEST(MetaHttpReplaceHandlerTest, ReplacePart) {
         tmp, FLAGS_ws_http_port, sFrom.toString().c_str(), sTo.toString().c_str());
     auto response = silentCurl(url);
     ASSERT_TRUE(response.ok());
-    EXPECT_EQ(response.value(), "Replace Host in partition and zone successfully");
+    EXPECT_EQ(response.value(), "Replace Host in partition metadata successfully");
   }
   {
     std::string value;
@@ -388,36 +379,89 @@ TEST(MetaHttpReplaceHandlerTest, ReplacePart) {
   }
 }
 
-TEST(MetaHttpReplaceHandlerTest, PreserveLeaderRecordsForScopedRequests) {
+TEST(MetaHttpReplaceHandlerTest, CleanLeaderRecordsWithinRequestScope) {
   HostAddr source{"1", 1};
   HostAddr destination{"66.66.66.66", 6666};
-  const auto leaderKey = MetaKeyUtils::leaderKey(1, 1);
+  HostAddr sameHostOtherPort{"1", 99};
   const auto leaderValue = MetaKeyUtils::leaderValV3(source, 10);
   const auto updateTimeKey = MetaKeyUtils::lastUpdateTimeKey();
   const auto updateTimeValue = MetaKeyUtils::lastUpdateTimeVal(1);
+  const std::vector<std::string> sourceKeys{MetaKeyUtils::leaderKey(1, 1),
+                                            MetaKeyUtils::leaderKey(1, 2),
+                                            MetaKeyUtils::leaderKey(2, 1),
+                                            MetaKeyUtils::leaderKey(2, 2)};
+  const std::vector<kvstore::KV> retainedData{
+      {MetaKeyUtils::leaderKey(1, 3), MetaKeyUtils::leaderValV3(destination, 10)},
+      {MetaKeyUtils::leaderKey(1, 4), MetaKeyUtils::leaderValV3(sameHostOtherPort, 10)}};
+  struct RequestCase {
+    const char* scope;
+    std::vector<std::string> removedKeys;
+  };
+  const std::vector<RequestCase> cases{{"", sourceKeys},
+                                       {"&space=test_space", {sourceKeys[0], sourceKeys[1]}},
+                                       {"&part=1", {sourceKeys[0], sourceKeys[2]}},
+                                       {"&space=test_space&part=1", {sourceKeys[0]}}};
 
-  for (const char* scope : {"space=test_space", "part=1", "space=test_space&part=1"}) {
+  for (const auto& request : cases) {
     TestUtils::assembleSpace(gKVStore, 1, 4, 1, 4);
-    TestUtils::doPut(gKVStore, {{leaderKey, leaderValue}, {updateTimeKey, updateTimeValue}});
+    TestUtils::assembleSpace(gKVStore, 2, 4, 1, 4, true);
+    std::vector<kvstore::KV> data = retainedData;
+    data.emplace_back(updateTimeKey, updateTimeValue);
+    // Peers already use the destination: cleanup must also work without peer changes.
+    for (const auto& key : sourceKeys) {
+      data.emplace_back(key, leaderValue);
+      const auto [spaceId, partId] = MetaKeyUtils::parseLeaderKeyV3(key);
+      data.emplace_back(MetaKeyUtils::partKey(spaceId, partId),
+                        MetaKeyUtils::partVal({destination}));
+    }
+    TestUtils::doPut(gKVStore, std::move(data));
+    const auto zonesBefore = dumpZones(gKVStore);
 
-    auto url = folly::stringPrintf("http://127.0.0.1:%d/replace?from=%s&to=%s&%s",
+    auto url = folly::stringPrintf("http://127.0.0.1:%d/replace?from=%s&to=%s%s",
                                    FLAGS_ws_http_port,
                                    source.toString().c_str(),
-                                   destination.toString().c_str(),
-                                   scope);
+                                   source.toString().c_str(),
+                                   request.scope);
     auto response = silentCurl(url);
-    ASSERT_TRUE(response.ok()) << scope;
-    EXPECT_EQ(response.value(), "Replace Host in partition and zone successfully") << scope;
-
+    ASSERT_TRUE(response.ok()) << request.scope;
     std::string value;
-    ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, leaderKey, &value),
-              nebula::cpp2::ErrorCode::SUCCEEDED)
-        << scope;
-    EXPECT_EQ(value, leaderValue) << scope;
+    for (const auto& key : sourceKeys) {
+      ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, key, &value),
+                nebula::cpp2::ErrorCode::SUCCEEDED);
+      EXPECT_EQ(value, leaderValue);
+    }
     ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, updateTimeKey, &value),
-              nebula::cpp2::ErrorCode::SUCCEEDED)
-        << scope;
-    EXPECT_EQ(value, updateTimeValue) << scope;
+              nebula::cpp2::ErrorCode::SUCCEEDED);
+    EXPECT_EQ(value, updateTimeValue);
+
+    url = folly::stringPrintf("http://127.0.0.1:%d/replace?from=%s&to=%s%s",
+                              FLAGS_ws_http_port,
+                              source.toString().c_str(),
+                              destination.toString().c_str(),
+                              request.scope);
+    response = silentCurl(url);
+    ASSERT_TRUE(response.ok()) << request.scope;
+    EXPECT_EQ(response.value(), "Replace Host in partition metadata successfully");
+
+    for (const auto& key : sourceKeys) {
+      const auto ret = gKVStore->get(kDefaultSpaceId, kDefaultPartId, key, &value);
+      if (std::find(request.removedKeys.begin(), request.removedKeys.end(), key) !=
+          request.removedKeys.end()) {
+        EXPECT_EQ(ret, nebula::cpp2::ErrorCode::E_KEY_NOT_FOUND) << request.scope;
+      } else {
+        ASSERT_EQ(ret, nebula::cpp2::ErrorCode::SUCCEEDED) << request.scope;
+        EXPECT_EQ(value, leaderValue) << request.scope;
+      }
+    }
+    for (const auto& kv : retainedData) {
+      ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, kv.first, &value),
+                nebula::cpp2::ErrorCode::SUCCEEDED);
+      EXPECT_EQ(value, kv.second);
+    }
+    ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, updateTimeKey, &value),
+              nebula::cpp2::ErrorCode::SUCCEEDED);
+    EXPECT_NE(value, updateTimeValue) << request.scope;
+    EXPECT_EQ(dumpZones(gKVStore), zonesBefore) << request.scope;
   }
 }
 
