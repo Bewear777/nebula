@@ -216,61 +216,60 @@ bool MetaHttpReplaceHostHandler::replaceHostInPart(const HostAddr& ipv4From,
     }
   }
 
-  // Preserve the original write path for space/part-scoped requests.
-  if (!replacingAllParts) {
+  if (replacingAllParts) {
+    // Clean stale source leader records even if an earlier replacement already changed all parts.
+    kvstore::BatchHolder batchHolder;
+    for (auto& [key, value] : data) {
+      batchHolder.put(std::move(key), std::move(value));
+    }
+
+    const auto& leaderPrefix = MetaKeyUtils::leaderPrefix();
+    std::unique_ptr<kvstore::KVIterator> leaderIter;
+    auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
+    if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
+      errMsg_ = folly::stringPrintf("Can't get leader prefix=%s", leaderPrefix.c_str());
+      LOG(INFO) << errMsg_;
+      return false;
+    }
+    while (leaderIter->valid()) {
+      HostAddr leader;
+      nebula::cpp2::ErrorCode code;
+      std::tie(leader, std::ignore, code) = MetaKeyUtils::parseLeaderValV3(leaderIter->val());
+      if (code != nebula::cpp2::ErrorCode::SUCCEEDED) {
+        errMsg_ = "Can't parse leader value";
+        LOG(INFO) << errMsg_;
+        return false;
+      }
+      if (leader == ipv4From) {
+        batchHolder.remove(leaderIter->key().str());
+      }
+      leaderIter->next();
+    }
+
+    LastUpdateTimeMan::update(&batchHolder, time::WallClock::fastNowInMilliSec());
+
     bool updateSucceed{false};
     folly::Baton<true, std::atomic> baton;
-    kvstore_->asyncMultiPut(
-        kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
+    auto batch = kvstore::encodeBatchValue(batchHolder.getBatch());
+    kvstore_->asyncAppendBatch(
+        kDefaultSpaceId, kDefaultPartId, std::move(batch), [&](nebula::cpp2::ErrorCode code) {
           updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
-          errMsg_ = folly::stringPrintf("Write to kvstore failed, %s , %d", __func__, __LINE__);
+          if (!updateSucceed) {
+            errMsg_ = folly::stringPrintf("Write batch to kvstore failed, code=%d",
+                                          static_cast<int32_t>(code));
+          }
           baton.post();
         });
     baton.wait();
     return updateSucceed;
   }
 
-  // Clean stale source leader records even if an earlier replacement already changed all parts.
-  kvstore::BatchHolder batchHolder;
-  for (auto& [key, value] : data) {
-    batchHolder.put(std::move(key), std::move(value));
-  }
-
-  const auto& leaderPrefix = MetaKeyUtils::leaderPrefix();
-  std::unique_ptr<kvstore::KVIterator> leaderIter;
-  auto kvRet = kvstore_->prefix(kDefaultSpaceId, kDefaultPartId, leaderPrefix, &leaderIter);
-  if (kvRet != nebula::cpp2::ErrorCode::SUCCEEDED) {
-    errMsg_ = folly::stringPrintf("Can't get leader prefix=%s", leaderPrefix.c_str());
-    LOG(INFO) << errMsg_;
-    return false;
-  }
-  while (leaderIter->valid()) {
-    HostAddr leader;
-    nebula::cpp2::ErrorCode code;
-    std::tie(leader, std::ignore, code) = MetaKeyUtils::parseLeaderValV3(leaderIter->val());
-    if (code != nebula::cpp2::ErrorCode::SUCCEEDED) {
-      errMsg_ = "Can't parse leader value";
-      LOG(INFO) << errMsg_;
-      return false;
-    }
-    if (leader == ipv4From) {
-      batchHolder.remove(leaderIter->key().str());
-    }
-    leaderIter->next();
-  }
-
-  LastUpdateTimeMan::update(&batchHolder, time::WallClock::fastNowInMilliSec());
-
   bool updateSucceed{false};
   folly::Baton<true, std::atomic> baton;
-  auto batch = kvstore::encodeBatchValue(batchHolder.getBatch());
-  kvstore_->asyncAppendBatch(
-      kDefaultSpaceId, kDefaultPartId, std::move(batch), [&](nebula::cpp2::ErrorCode code) {
+  kvstore_->asyncMultiPut(
+      kDefaultSpaceId, kDefaultPartId, std::move(data), [&](nebula::cpp2::ErrorCode code) {
         updateSucceed = (code == nebula::cpp2::ErrorCode::SUCCEEDED);
-        if (!updateSucceed) {
-          errMsg_ = folly::stringPrintf("Write batch to kvstore failed, code=%d",
-                                        static_cast<int32_t>(code));
-        }
+        errMsg_ = folly::stringPrintf("Write to kvstore failed, %s , %d", __func__, __LINE__);
         baton.post();
       });
   baton.wait();

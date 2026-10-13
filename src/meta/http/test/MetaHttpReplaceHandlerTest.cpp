@@ -388,6 +388,39 @@ TEST(MetaHttpReplaceHandlerTest, ReplacePart) {
   }
 }
 
+TEST(MetaHttpReplaceHandlerTest, PreserveLeaderRecordsForScopedRequests) {
+  HostAddr source{"1", 1};
+  HostAddr destination{"66.66.66.66", 6666};
+  const auto leaderKey = MetaKeyUtils::leaderKey(1, 1);
+  const auto leaderValue = MetaKeyUtils::leaderValV3(source, 10);
+  const auto updateTimeKey = MetaKeyUtils::lastUpdateTimeKey();
+  const auto updateTimeValue = MetaKeyUtils::lastUpdateTimeVal(1);
+
+  for (const char* scope : {"space=test_space", "part=1", "space=test_space&part=1"}) {
+    TestUtils::assembleSpace(gKVStore, 1, 4, 1, 4);
+    TestUtils::doPut(gKVStore, {{leaderKey, leaderValue}, {updateTimeKey, updateTimeValue}});
+
+    auto url = folly::stringPrintf("http://127.0.0.1:%d/replace?from=%s&to=%s&%s",
+                                   FLAGS_ws_http_port,
+                                   source.toString().c_str(),
+                                   destination.toString().c_str(),
+                                   scope);
+    auto response = silentCurl(url);
+    ASSERT_TRUE(response.ok()) << scope;
+    EXPECT_EQ(response.value(), "Replace Host in partition and zone successfully") << scope;
+
+    std::string value;
+    ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, leaderKey, &value),
+              nebula::cpp2::ErrorCode::SUCCEEDED)
+        << scope;
+    EXPECT_EQ(value, leaderValue) << scope;
+    ASSERT_EQ(gKVStore->get(kDefaultSpaceId, kDefaultPartId, updateTimeKey, &value),
+              nebula::cpp2::ErrorCode::SUCCEEDED)
+        << scope;
+    EXPECT_EQ(value, updateTimeValue) << scope;
+  }
+}
+
 std::set<HostAddr> dumpPartHosts(kvstore::KVStore* kvstore) {
   // Get all hosts from all partition
   std::vector<GraphSpaceID> allSpaceId;
